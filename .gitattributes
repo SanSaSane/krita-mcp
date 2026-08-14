@@ -1,2 +1,11 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Shell scripts must keep LF even when checked out on Windows, or bash
+# chokes on the carriage returns.
+*.sh text eol=lf
+
+# Krita parses these itself; keep them LF too.
+*.desktop text eol=lf
+
+*.png binary

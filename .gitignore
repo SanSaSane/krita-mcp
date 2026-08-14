@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Output from the example scripts
+poster.png
+poster_preview.png
+docs/banner_preview.png
+
+# Krita
+*.kra~
+*.kra-autosave.kra

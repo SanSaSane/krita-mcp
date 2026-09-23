@@ -9,8 +9,7 @@ instead of trusting it.
 import base64
 import sys
 
-from PyQt5.QtCore import QBuffer, QByteArray, QRect, Qt
-from PyQt5.QtGui import QColor, QImage
+from .compat import QBuffer, QByteArray, QRect, QtCompat as Qt, QColor, QImage
 
 RGBA8 = ("RGBA", "U8")
 

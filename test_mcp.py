@@ -222,7 +222,7 @@ def main():
         section("connection and status")
         status, _ = client.ok("status")
         check("status reports Krita version",
-              str(status.get("krita_version", "")).startswith("5."),
+              str(status.get("krita_version", "")).startswith(("5.", "6.")),
               str(status.get("krita_version")))
 
         selftest, _ = client.ok("self_test")

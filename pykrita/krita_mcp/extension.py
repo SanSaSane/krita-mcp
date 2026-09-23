@@ -2,7 +2,7 @@
 
 import traceback
 
-from PyQt5.QtWidgets import QMessageBox
+from .compat import QMessageBox
 
 from krita import Extension, Krita
 

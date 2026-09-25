@@ -16,7 +16,7 @@ loop, and the slot therefore runs where it is safe to.  The worker blocks on a
 import threading
 import traceback
 
-from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
+from .compat import QObject, QtCompat as Qt, QTimer, pyqtSignal
 
 
 class MainThreadTimeout(Exception):

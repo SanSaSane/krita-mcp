@@ -1,4 +1,4 @@
-﻿"""The operations the MCP server can invoke.
+"""The operations the MCP server can invoke.
 
 Everything in here runs on Krita's GUI thread (see mainthread.py), so it may
 touch libkis freely, but it must never block for long: the HTTP worker is
@@ -21,19 +21,24 @@ import time
 import traceback
 from contextlib import redirect_stderr, redirect_stdout
 
-from PyQt5.QtCore import QLineF, QPointF, QRect, QRectF, Qt
-from PyQt5.QtGui import (
+from .compat import (
     QBrush,
     QColor,
     QFont,
     QFontMetricsF,
     QImage,
     QLinearGradient,
+    QLineF,
     QPainter,
     QPainterPath,
     QPen,
+    QPointF,
     QPolygonF,
     QRadialGradient,
+    QRect,
+    QRectF,
+    QtCompat as Qt,
+    QTransform,
 )
 
 from . import imaging
@@ -467,7 +472,7 @@ def _settle_after_close(budget=0.6):
     signal can be delivered while we pump, so MainThreadInvoker defers any
     operation that arrives during this window instead of running it nested.
     """
-    from PyQt5.QtCore import QCoreApplication, QEvent, QEventLoop
+    from .compat import QCoreApplication, QEvent, QEventLoop
 
     app = QCoreApplication.instance()
     if app is None:
@@ -1680,7 +1685,14 @@ def op_trigger_action(params):
     # emits regardless of that flag, so refusing here would reject calls that
     # actually work -- report the flag instead of gating on it.
     was_enabled = bool(action.isEnabled())
-    action.trigger()
+    if not was_enabled:
+        action.setEnabled(True)
+        try:
+            action.trigger()
+        finally:
+            action.setEnabled(False)
+    else:
+        action.trigger()
     result = {"triggered": name, "was_enabled": was_enabled}
     if not was_enabled:
         result["note"] = ("Krita had this action marked disabled, usually "

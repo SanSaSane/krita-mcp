@@ -138,9 +138,14 @@ class KritaMcpExtension(Extension):
         if self._toggle_action is None:
             return
         running = self._bridge is not None and self._bridge.running
-        self._toggle_action.setText(
-            "Stop MCP Bridge (port {0})".format(self._bridge.port) if running
-            else "Start MCP Bridge")
+        text = ("Stop MCP Bridge (port {0})".format(self._bridge.port) if running
+                else "Start MCP Bridge")
+        try:
+            self._toggle_action.setText(text)
+        except RuntimeError:
+            # The window that owned this action was closed, and Qt deleted
+            # the action together with it.
+            self._toggle_action = None
 
     def _message(self, title, body):
         try:

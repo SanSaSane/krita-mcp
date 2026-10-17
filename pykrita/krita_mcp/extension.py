@@ -26,7 +26,9 @@ class KritaMcpExtension(Extension):
         self._invoker = None
         self._bridge = None
         self._start_error = None
-        self._toggle_action = None
+        # One per window: Krita calls createActions() for every window it
+        # opens, and each window's menu has its own copy of the action.
+        self._toggle_actions = []
 
     # -- Krita hooks ------------------------------------------------------
     def setup(self):
@@ -45,9 +47,10 @@ class KritaMcpExtension(Extension):
             self._start(quiet=True)
 
     def createActions(self, window):
-        self._toggle_action = window.createAction(
+        toggle = window.createAction(
             "krita_mcp_toggle", "Toggle MCP Bridge", "tools/scripts")
-        self._toggle_action.triggered.connect(self._on_toggle)
+        toggle.triggered.connect(self._on_toggle)
+        self._toggle_actions.append(toggle)
 
         status = window.createAction(
             "krita_mcp_status", "MCP Bridge Status...", "tools/scripts")
@@ -135,17 +138,19 @@ class KritaMcpExtension(Extension):
         self._message("Krita MCP bridge", body)
 
     def _refresh_action_text(self):
-        if self._toggle_action is None:
-            return
         running = self._bridge is not None and self._bridge.running
         text = ("Stop MCP Bridge (port {0})".format(self._bridge.port) if running
                 else "Start MCP Bridge")
-        try:
-            self._toggle_action.setText(text)
-        except RuntimeError:
-            # The window that owned this action was closed, and Qt deleted
-            # the action together with it.
-            self._toggle_action = None
+        alive = []
+        for action in self._toggle_actions:
+            try:
+                action.setText(text)
+            except RuntimeError:
+                # The window that owned this action was closed, and Qt
+                # deleted the action together with it.
+                continue
+            alive.append(action)
+        self._toggle_actions = alive
 
     def _message(self, title, body):
         try:

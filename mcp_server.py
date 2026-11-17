@@ -407,6 +407,12 @@ TOOLS = [
           "x": {"type": "integer"}, "y": {"type": "integer"},
           "width": {"type": "integer"}, "height": {"type": "integer"},
           "degrees": {"type": "number"},
+          "x_res": {"type": "number", "minimum": 1,
+                    "description": "scale: new horizontal resolution in dpi "
+                                   "(default unchanged)."},
+          "y_res": {"type": "number", "minimum": 1,
+                    "description": "scale: new vertical resolution in dpi "
+                                   "(default unchanged)."},
           "strategy": {"type": "string", "default": "Bicubic",
                        "description": "Scaling filter: Bicubic, Bilinear, "
                                       "NearestNeighbor, Lanczos3, Box."}},
@@ -569,6 +575,176 @@ def _summarise(result):
     return json.dumps(result, indent=2, ensure_ascii=False, default=str)
 
 
+# ---------------------------------------------------------------------------
+# argument validation
+# ---------------------------------------------------------------------------
+
+MAX_SCHEMA_ERRORS = 10
+
+
+def _json_type(value):
+    """The JSON type name of a decoded value (bool is not a number)."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, (list, tuple)):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__
+
+
+def _matches_type(type_name, value):
+    if type_name == "integer":
+        if isinstance(value, bool):
+            return False
+        return isinstance(value, int) or (isinstance(value, float)
+                                          and value.is_integer())
+    if type_name == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if type_name == "string":
+        return isinstance(value, str)
+    if type_name == "boolean":
+        return isinstance(value, bool)
+    if type_name == "object":
+        return isinstance(value, dict)
+    if type_name == "array":
+        return isinstance(value, (list, tuple))
+    raise ValueError("unsupported schema type {0!r}".format(type_name))
+
+
+def _show(value):
+    """How a value appears in an error: scalars inline, containers by type."""
+    kind = _json_type(value)
+    if kind in ("array", "object"):
+        return kind
+    text = json.dumps(value, ensure_ascii=False, default=repr)
+    if len(text) > 40:
+        text = text[:37] + "..."
+    return "{0} {1}".format(kind, text)
+
+
+def _same_json(a, b):
+    """Equality where True is not 1 (Python would say it is)."""
+    return isinstance(a, bool) == isinstance(b, bool) and a == b
+
+
+def _check(schema, value, path, errors):
+    if len(errors) > MAX_SCHEMA_ERRORS:
+        return
+
+    declared = schema.get("type")
+    if declared is not None:
+        names = [declared] if isinstance(declared, str) else list(declared)
+        if not any(_matches_type(n, value) for n in names):
+            errors.append("{0}: expected {1}, got {2}".format(
+                path, " or ".join(names), _show(value)))
+            return
+
+    if "enum" in schema and not any(_same_json(value, c)
+                                    for c in schema["enum"]):
+        errors.append("{0}: {1} is not one of: {2}".format(
+            path, _show(value),
+            ", ".join(json.dumps(c, ensure_ascii=False)
+                      for c in schema["enum"])))
+
+    if isinstance(value, dict):
+        properties = schema.get("properties", {})
+        for key in schema.get("required", ()):
+            if key not in value:
+                errors.append("{0}: missing required property {1!r}".format(
+                    path, key))
+        for key, item in value.items():
+            if key in properties:
+                _check(properties[key], item, "{0}.{1}".format(path, key),
+                       errors)
+            elif schema.get("additionalProperties") is False:
+                errors.append(
+                    "{0}.{1}: unexpected property; allowed properties: {2}"
+                    .format(path, key, ", ".join(properties) or "(none)"))
+            if len(errors) > MAX_SCHEMA_ERRORS:
+                return
+
+    elif isinstance(value, (list, tuple)):
+        if "minItems" in schema and len(value) < schema["minItems"]:
+            errors.append("{0}: expected at least {1} item(s), got {2}".format(
+                path, schema["minItems"], len(value)))
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            errors.append("{0}: expected at most {1} item(s), got {2}".format(
+                path, schema["maxItems"], len(value)))
+        item_schema = schema.get("items")
+        if item_schema is not None:
+            for index, item in enumerate(value):
+                _check(item_schema, item, "{0}[{1}]".format(path, index),
+                       errors)
+                if len(errors) > MAX_SCHEMA_ERRORS:
+                    return
+
+    elif (isinstance(value, (int, float)) and not isinstance(value, bool)):
+        if "minimum" in schema and value < schema["minimum"]:
+            errors.append("{0}: {1} is below the minimum of {2}".format(
+                path, value, schema["minimum"]))
+        if "maximum" in schema and value > schema["maximum"]:
+            errors.append("{0}: {1} is above the maximum of {2}".format(
+                path, value, schema["maximum"]))
+
+
+def validate_arguments(schema, value, path="arguments"):
+    """Check `value` against the JSON-Schema subset our tool schemas use.
+
+    Returns human-readable error strings, empty when the value conforms. At
+    most MAX_SCHEMA_ERRORS entries come back, the last one saying that more
+    were left out, so an enormous bad payload cannot produce an enormous
+    message (the walk stops as soon as the cap is exceeded).
+
+    Supported: type (one name or a list), enum, properties, required,
+    additionalProperties: false, items, minItems, maxItems, minimum, maximum.
+    Other keywords (default, description) are ignored. An integer may be a
+    float with no fractional part; a bool is neither integer nor number.
+    """
+    errors = []
+    _check(schema, value, path, errors)
+    if len(errors) > MAX_SCHEMA_ERRORS:
+        errors = errors[:MAX_SCHEMA_ERRORS - 1]
+        errors.append("... further errors not shown")
+    return errors
+
+
+def drop_optional_nulls(schema, value):
+    """Copy of `value` without null-valued optional properties.
+
+    Clients often send `null` for a parameter they mean to omit, and the
+    plugin already reads null as absent. A null for a `required` property is
+    kept so validation still reports it, and so is a null under a name the
+    schema does not declare, so a misspelt key is not hidden. Objects are
+    cleaned wherever a schema with `properties` describes them, including
+    array items (draw commands); schemaless objects such as filter settings
+    are passed through untouched.
+    """
+    if isinstance(value, dict) and "properties" in schema:
+        properties = schema["properties"]
+        required = schema.get("required", ())
+        cleaned = {}
+        for key, item in value.items():
+            if key in properties:
+                if item is None and key not in required:
+                    continue
+                item = drop_optional_nulls(properties[key], item)
+            cleaned[key] = item
+        return cleaned
+    if isinstance(value, (list, tuple)) and isinstance(schema.get("items"),
+                                                       dict):
+        return [drop_optional_nulls(schema["items"], item) for item in value]
+    return value
+
+
 def call_tool(name, arguments):
     spec = TOOLS_BY_NAME.get(name)
     if spec is None:
@@ -576,7 +752,17 @@ def call_tool(name, arguments):
                           "No tool named {0!r}. Available: {1}".format(
                               name, ", ".join(sorted(TOOLS_BY_NAME))))
 
-    args = dict(arguments or {})
+    arguments = drop_optional_nulls(
+        spec["inputSchema"], {} if arguments is None else arguments)
+    problems = validate_arguments(spec["inputSchema"], arguments)
+    if problems:
+        raise BridgeError(
+            "invalid_arguments",
+            "{0} was not called: the arguments do not match its input "
+            "schema.\n{1}".format(name, "\n".join(
+                "- " + line for line in problems)))
+
+    args = dict(arguments)
     op = spec["_op"]
     if spec["_transform"] is not None:
         op, args = spec["_transform"](args)
@@ -686,7 +872,9 @@ class Server:
         name = params.get("name")
         if not isinstance(name, str):
             raise BridgeError("invalid_request", "tools/call needs a `name`.")
-        arguments = params.get("arguments") or {}
+        arguments = params.get("arguments")
+        if arguments is None:
+            arguments = {}
         if not isinstance(arguments, dict):
             raise BridgeError("invalid_request", "`arguments` must be an object.")
 

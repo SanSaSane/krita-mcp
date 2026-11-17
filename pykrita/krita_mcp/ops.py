@@ -871,22 +871,44 @@ def op_list_layers(params):
     return {"document": _doc_summary(doc), "layers": tree}
 
 
+# Only kinds that createNode() returns in a usable state. A filter, fill or
+# clone layer needs a filter, generator or source that createNode() cannot
+# give it, and on Krita 5.3.4 saving a document holding one kills Krita
+# (SIGSEGV for filterlayer and filllayer, SIGABRT for clonelayer). Filter,
+# transform and colorize masks need configuration for the same reason.
 _LAYER_TYPES = {
     "paintlayer": "paintlayer",
     "paint": "paintlayer",
     "grouplayer": "grouplayer",
     "group": "grouplayer",
     "filelayer": "filelayer",
-    "filterlayer": "filterlayer",
-    "filllayer": "filllayer",
-    "clonelayer": "clonelayer",
     "vectorlayer": "vectorlayer",
     "transparencymask": "transparencymask",
-    "filtermask": "filtermask",
-    "transformmask": "transformmask",
     "selectionmask": "selectionmask",
-    "colorizemask": "colorizemask",
 }
+
+
+def _create_mask(doc, name, node_type):
+    """A mask with a selection, as Krita's own "Add mask" makes it.
+
+    ``createNode("transparencymask")`` returns a mask without a selection, and
+    saving a document holding one kills Krita 5.3.4. Start from the
+    document's selection, or reveal everything when there is none.
+    """
+    from krita import Selection
+    create = {"transparencymask": doc.createTransparencyMask,
+              "selectionmask": doc.createSelectionMask}[node_type]
+    mask = create(name)
+    if mask is None:
+        return None
+    current = doc.selection()
+    if current is not None:
+        selection = current.duplicate()
+    else:
+        selection = Selection()
+        selection.select(0, 0, doc.width(), doc.height(), 255)
+    mask.setSelection(selection)
+    return mask
 
 
 @op("create_layer", timeout=60.0, mutates=True)
@@ -895,25 +917,40 @@ def op_create_layer(params):
     name = str(_arg(params, "name", "Layer"))
     raw_type = str(_arg(params, "type", "paintlayer")).lower().replace(" ", "")
     if raw_type not in _LAYER_TYPES:
-        raise OpError("Unknown layer type {0!r}. Supported: {1}".format(
-            raw_type, ", ".join(sorted(set(_LAYER_TYPES.values())))))
+        raise OpError(
+            "Unknown layer type {0!r}. Supported: {1}. Filter, fill and clone "
+            "layers and filter/transform/colorize masks are not offered: "
+            "created without their configuration they crash Krita on save."
+            .format(raw_type, ", ".join(sorted(set(_LAYER_TYPES.values())))))
     node_type = _LAYER_TYPES[raw_type]
+    is_mask = node_type.endswith("mask")
+
+    parent_ref = params.get("parent")
+    if parent_ref in (None, ""):
+        if is_mask:
+            raise OpError("A {0} applies to a layer: pass that layer as "
+                          "`parent`.".format(node_type))
+        parent = doc.rootNode()
+    else:
+        parent = resolve_node(doc, parent_ref, allow_root=True)
+        if is_mask and (parent == doc.rootNode()
+                        or parent.type().endswith("mask")):
+            raise OpError("parent {0!r} is not a layer; a mask goes on a "
+                          "layer.".format(parent_ref))
+        if not is_mask and parent.type() != "grouplayer":
+            raise OpError("parent {0!r} is a {1}; layers can only be nested "
+                          "inside a group layer.".format(parent_ref,
+                                                         parent.type()))
 
     if node_type == "grouplayer":
         node = doc.createGroupLayer(name)
+    elif is_mask:
+        node = _create_mask(doc, name, node_type)
     else:
         node = doc.createNode(name, node_type)
     if node is None:
         raise OpError("Krita could not create a {0} named {1!r}.".format(
             node_type, name))
-
-    parent_ref = params.get("parent")
-    parent = (resolve_node(doc, parent_ref, allow_root=True)
-              if parent_ref not in (None, "") else doc.rootNode())
-    if parent_ref not in (None, "") and parent.type() != "grouplayer" \
-            and parent is not doc.rootNode():
-        raise OpError("parent {0!r} is a {1}; layers can only be nested inside "
-                      "a group layer.".format(parent_ref, parent.type()))
 
     sibling_count = len(_children(parent))
     index = params.get("index")

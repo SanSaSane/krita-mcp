@@ -510,19 +510,167 @@ TOOLS = [
          required=["filter"]),
 
     tool("set_selection",
-         "Change the active selection, which constrains filters and painting.",
+         "Change the active selection, which constrains filters and "
+         "edit_selection. Modes: rect, ellipse, polygon (points), color "
+         "(every pixel matching a colour, or with contiguous=true the "
+         "connected area under x, y - a magic wand), layer_alpha (a layer's "
+         "opaque area), plus all, none, invert, grow, shrink, feather.",
          {"document": DOCUMENT_PROP,
           "mode": {"type": "string", "default": "rect",
-                   "enum": ["rect", "all", "none", "invert", "grow", "shrink",
-                            "feather"]},
-          "x": {"type": "integer"}, "y": {"type": "integer"},
+                   "enum": ["rect", "ellipse", "polygon", "color",
+                            "layer_alpha", "all", "none", "invert", "grow",
+                            "shrink", "feather"]},
+          "x": {"type": "integer",
+                "description": "Left edge; for mode=color the sample point."},
+          "y": {"type": "integer"},
           "width": {"type": "integer"}, "height": {"type": "integer"},
+          "points": {"type": "array",
+                     "items": {"type": "array", "items": {"type": "number"},
+                               "minItems": 2, "maxItems": 2},
+                     "description": "Polygon corners as [x, y]."},
+          "color": {"description": "mode=color: the colour to match. Omit to "
+                                   "use the colour found at x, y."},
+          "tolerance": {"type": "integer", "default": 0,
+                        "description": "mode=color: allowed difference per "
+                                       "channel, 0-255."},
+          "contiguous": {"type": "boolean", "default": False,
+                         "description": "mode=color: only the connected area "
+                                        "containing x, y."},
+          "layer": {"type": "string",
+                    "description": "mode=color and layer_alpha: the layer to "
+                                   "read; \"merged\" reads the whole image "
+                                   "(color only). Default: active layer."},
+          "threshold": {"type": "integer",
+                        "description": "mode=layer_alpha: make the selection "
+                                       "hard, selecting alpha >= this."},
+          "antialias": {"type": "boolean", "default": True,
+                        "description": "ellipse and polygon: soft edge."},
+          "combine": {"type": "string", "default": "replace",
+                      "enum": ["replace", "add", "subtract", "intersect"],
+                      "description": "How ellipse, polygon, color and "
+                                     "layer_alpha meet the existing "
+                                     "selection."},
           "value": {"type": "integer", "default": 255,
-                    "description": "Selection strength 0-255."},
+                    "description": "rect: selection strength 0-255."},
           "add": {"type": "boolean", "default": False,
-                  "description": "Union with the existing selection."},
+                  "description": "rect: union with the existing selection."},
           "amount": {"type": "integer", "default": 1,
                      "description": "Pixels, for grow/shrink/feather."}}),
+
+    tool("transform_layer",
+         "Move, scale, rotate or flip ONE paint layer's pixels. Several "
+         "parameters may be combined; they apply as scale and flip, then "
+         "rotate (both around the pivot), then translate. A whole-pixel move "
+         "and a plain flip are lossless; scaling and rotating resample, so "
+         "prefer one combined call over many small ones. Not in Krita's undo "
+         "history: the result carries a snapshot id to restore.",
+         {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
+          "translate": {"type": "array", "items": {"type": "number"},
+                        "minItems": 2, "maxItems": 2,
+                        "description": "[dx, dy] in pixels; +y is down."},
+          "move_to": {"type": "array", "items": {"type": "number"},
+                      "minItems": 2, "maxItems": 2,
+                      "description": "Put the top-left corner of the layer's "
+                                     "opaque bounds at [x, y]."},
+          "rotate": {"type": "number",
+                     "description": "Degrees, clockwise positive."},
+          "scale": {"description": "A factor, or [sx, sy]."},
+          "flip": {"type": "string",
+                   "enum": ["none", "horizontal", "vertical", "both"]},
+          "pivot": {"description": "[x, y] in canvas pixels, or an anchor of "
+                                   "the layer's opaque bounds: center "
+                                   "(default), top_left, top, top_right, "
+                                   "left, right, bottom_left, bottom, "
+                                   "bottom_right."},
+          "smooth": {"type": "boolean", "default": True,
+                     "description": "false resamples with hard pixel edges."}}),
+
+    tool("edit_selection",
+         "Act on the selected part of a paint layer: clear it, fill it with "
+         "a colour, or copy/cut it onto a new layer placed directly above "
+         "(optionally in another open document, or at another position). "
+         "Call set_selection first.",
+         {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
+          "action": {"type": "string",
+                     "enum": ["clear", "fill", "copy_to_layer",
+                              "cut_to_layer"]},
+          "color": {"description": "fill: the colour."},
+          "replace": {"type": "boolean", "default": True,
+                      "description": "fill: true replaces what is there, "
+                                     "false paints over it."},
+          "name": {"type": "string", "description": "Name of the new layer."},
+          "target_document": DOCUMENT_PROP,
+          "x": {"type": "integer",
+                "description": "Left edge of the piece on the new layer."},
+          "y": {"type": "integer"}},
+         required=["action"]),
+
+    tool("replace_color",
+         "Recolour a paint layer: every pixel matching `from` becomes `to`. "
+         "With preserve_alpha (default) soft edge pixels keep their opacity, "
+         "which is what flat shapes need. Use get_pixel to read the exact "
+         "source colour, and tolerance to catch near-misses.",
+         {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
+          "from": {"description": "Colour to replace."},
+          "to": {"description": "New colour."},
+          "tolerance": {"type": "integer", "default": 0,
+                        "description": "Allowed difference per channel."},
+          "preserve_alpha": {"type": "boolean", "default": True},
+          "selection_only": {"type": "boolean", "default": False}},
+         required=["from", "to"]),
+
+    tool("import_layer",
+         "Add an image file (PNG, JPEG, ...) as a new paint layer, on top or "
+         "directly above another layer, with its top-left corner at x, y.",
+         {"document": DOCUMENT_PROP,
+          "path": {"type": "string", "description": "Absolute file path."},
+          "name": {"type": "string"},
+          "above": LAYER_PROP,
+          "x": {"type": "integer", "default": 0},
+          "y": {"type": "integer", "default": 0}},
+         required=["path"]),
+
+    tool("snapshot",
+         "Revert edits that Krita's undo does not record. transform_layer, "
+         "edit_selection and replace_color save a snapshot of the layer first "
+         "and return its id. list shows them, restore puts one back, take "
+         "saves one by hand, drop forgets one. Snapshots are kept in memory "
+         "until Krita quits.",
+         {"action": {"type": "string", "default": "list",
+                     "enum": ["list", "take", "restore", "drop"]},
+          "id": {"type": "integer", "description": "For restore and drop."},
+          "document": DOCUMENT_PROP, "layer": LAYER_PROP,
+          "label": {"type": "string"}}),
+
+    tool("measure",
+         "Report where layers are: opaque bounds and centre for each layer "
+         "(the listed ones, or the children of a group, or all top-level "
+         "layers). With `reference`, also how well each layer covers that "
+         "layer - overlap, IoU and centre offset - for fitting a piece to a "
+         "reference drawing.",
+         {"document": DOCUMENT_PROP,
+          "layers": {"type": "array", "items": {"type": "string"}},
+          "group": LAYER_PROP,
+          "reference": LAYER_PROP,
+          "count_pixels": {"type": "boolean", "default": False},
+          "threshold": {"type": "integer", "default": 128,
+                        "description": "Alpha at or above this counts as "
+                                       "opaque."}}),
+
+    tool("export_layers",
+         "Write one PNG per layer (trimmed to its opaque bounds by default) "
+         "and a JSON manifest with each layer's position, size and draw "
+         "order. Covers the listed layers, the children of a group, or all "
+         "top-level layers; hidden and empty layers are skipped.",
+         {"document": DOCUMENT_PROP,
+          "directory": {"type": "string",
+                        "description": "Absolute folder; created if missing."},
+          "layers": {"type": "array", "items": {"type": "string"}},
+          "group": LAYER_PROP,
+          "trim": {"type": "boolean", "default": True},
+          "include_hidden": {"type": "boolean", "default": False},
+          "manifest": {"type": "string", "default": "layers.json"}},
+         required=["directory"]),
 
     tool("list_capabilities",
          "List what this Krita build supports: filter names (with their "

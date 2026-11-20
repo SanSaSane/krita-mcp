@@ -1,6 +1,6 @@
 # Edit tools for the Krita MCP bridge
 
-Status: draft, 2026-11-20. Fork of [SanSaSane/krita-mcp](https://github.com/SanSaSane/krita-mcp) (CC0), branch `edit-tools`.
+Status: built, 2026-11-20. What the spike decided is at the end. Fork of [SanSaSane/krita-mcp](https://github.com/SanSaSane/krita-mcp) (CC0), branch `edit-tools`.
 
 ## Why
 
@@ -43,28 +43,35 @@ Upstream covers documents, layers, drawing, filters and viewing. It has no per-l
 
 ## Design
 
-New operations in `pykrita/krita_mcp/ops.py` (split into `ops_edit.py` if the file grows past comfort), each with an MCP tool entry in `mcp_server.py`:
+New operations in `pykrita/krita_mcp/ops_edit.py`, registered into `ops.OPS` at import so `ops.py` stays close to upstream, each with an MCP tool entry in `mcp_server.py`:
 
 | Tool | Does |
 | --- | --- |
-| `transform_layer` | `move` (dx, dy or absolute), `scale`, `rotate` (degrees), `flip`; `pivot` as a point or a named anchor (centre, corners of the opaque bounds). `mode`: `apply` (pixels change) or `mask` (non-destructive transform mask) |
-| `set_selection` (extended) | adds `ellipse`, `polygon`, `color` (tolerance, contiguous or global), `layer_alpha` |
-| `edit_selection` | `cut`, `copy`, `clear`, `to_new_layer`; `paste` at a position |
-| `fill` | fill the selection or a flood region with one colour; `replace_color` maps one colour (with tolerance) to another |
+| `transform_layer` | `translate`, `move_to`, `scale`, `rotate` (degrees, clockwise), `flip`; `pivot` as a point or a named anchor of the opaque bounds |
+| `set_selection` (extended) | adds `ellipse`, `polygon`, `color` (tolerance, contiguous or global), `layer_alpha`, and `combine` |
+| `edit_selection` | `clear`, `fill`, `copy_to_layer`, `cut_to_layer` (optionally at another position or into another open document) |
+| `replace_color` | maps one colour (with tolerance) to another, keeping each pixel's opacity |
 | `import_layer` | add an image file as a new layer at a position |
-| `snapshot` / `restore` | keep and bring back a hidden copy of a layer; taken automatically before any edit Krita's undo does not record |
+| `snapshot` | `list`, `take`, `restore`, `drop`; a compressed in-memory copy of a layer, taken automatically before every edit |
 | `measure` | opaque bounds, centre, pixel count per layer; difference against a reference layer |
 | `export_layers` | one trimmed PNG per layer plus a JSON manifest (name, offset, size, pivot) |
 
 Every mutating tool returns the layer it touched, its bounds before and after, and `undoable: true|false`.
 
-## Open until the spike
+## What the spike decided
 
-- Pivot and undo behaviour of libkis `Node.rotateNode` / `scaleNode` / `move`.
-- Whether `Selection.cut/copy/paste` work with Krita's window unfocused.
+Run on macOS, Krita 5.3.4, on a scratch document.
 
-If libkis does not give pivot control or undo, transforms are computed with `QTransform` on the layer's pixels and written back, with an automatic snapshot.
+| Question | Found | Decision |
+| --- | --- | --- |
+| `Node.move` | Works, lossless; not in the undo history | Used for whole-pixel moves |
+| `Node.rotateNode` / `scaleNode` | Work and are undoable, but run asynchronously (the result is only there after the event loop has turned) and rotate about the layer's own centre only | Not used. Transforms are computed with `QTransform` on the layer's pixels: any pivot, synchronous, one code path for scale, rotate and flip |
+| `Selection.cut` | Works | Not used, for consistency with paste |
+| `Selection.paste` | Pasted nothing | Cut and copy read and write pixels directly through the selection mask |
+| Undo | Mixed: some libkis calls are recorded, pixel writes and `move` are not | One rule instead: every edit takes a snapshot first and says `undoable: false` |
+
+Left out of this version: the non-destructive transform mask mode (`mode: mask`). Resampling an already resampled layer softens it, so for now the way to adjust a transform is to restore its snapshot and apply the corrected values.
 
 ## Testing
 
-Extend `test_mcp.py` with pixel-exact checks for each new tool on a scratch document. Run the full suite on macOS before each commit; run once on Windows before calling it done.
+`test_edit.py` holds pixel-exact checks for each new tool on a scratch document (44 checks), reusing the client from `test_mcp.py`. Run both suites on macOS before each commit; run once on Windows before calling it done.

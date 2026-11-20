@@ -448,7 +448,11 @@ def _refresh(doc):
 
 
 def _settle_canvas(doc, budget=0.25):
-    """Let the canvas catch up after the image changed size.
+    """Let the canvas catch up around a change of image size.
+
+    Called both before and after: updates queued by earlier operations must
+    be delivered before the size changes, and the ones the change itself
+    queues before the next request can change it again.
 
     refreshProjection() + waitForDone() finish the image side, but each view
     still has canvas updates queued behind a timer-driven signal compressor.
@@ -834,6 +838,7 @@ def op_resize_canvas(params):
     if width < 1 or height < 1:
         raise OpError("width and height must be at least 1")
     before = _doc_summary(doc)
+    _settle_canvas(doc)  # drain updates queued for the old size
     doc.resizeImage(x, y, width, height)
     _settle_canvas(doc)
     return {"before": before, "after": _doc_summary(doc)}
@@ -850,6 +855,7 @@ def op_scale_image(params):
     xres = _as_float(_arg(params, "x_res", doc.xRes()), "x_res")
     yres = _as_float(_arg(params, "y_res", doc.yRes()), "y_res")
     before = _doc_summary(doc)
+    _settle_canvas(doc)  # drain updates queued for the old size
     doc.scaleImage(width, height, int(xres), int(yres), strategy)
     _settle_canvas(doc)
     return {"before": before, "after": _doc_summary(doc),
@@ -862,6 +868,7 @@ def op_rotate_image(params):
     doc = resolve_document(params.get("document"))
     degrees = _as_float(_req(params, "degrees"), "degrees")
     before = _doc_summary(doc)
+    _settle_canvas(doc)  # drain updates queued for the old size
     doc.rotateImage(math.radians(degrees))
     _settle_canvas(doc)
     return {"before": before, "after": _doc_summary(doc), "degrees": degrees}
@@ -877,6 +884,7 @@ def op_crop_image(params):
     if width < 1 or height < 1:
         raise OpError("width and height must be at least 1")
     before = _doc_summary(doc)
+    _settle_canvas(doc)  # drain updates queued for the old size
     doc.crop(x, y, width, height)
     _settle_canvas(doc)
     return {"before": before, "after": _doc_summary(doc)}
@@ -885,6 +893,7 @@ def op_crop_image(params):
 @op("flatten_image", timeout=120.0, mutates=True)
 def op_flatten_image(params):
     doc = resolve_document(params.get("document"))
+    _settle_canvas(doc)  # drain updates queued for the old size
     doc.flatten()
     _settle_canvas(doc)
     return {"flattened": True, "layers": layer_tree(doc, 1)}
@@ -1918,3 +1927,12 @@ def dispatch(name, params):
 def op_timeout(name, default=30.0):
     handler = OPS.get(name)
     return getattr(handler, "op_timeout", default) if handler else default
+
+
+# --------------------------------------------------------------------------
+# editing operations (kept in their own module; see ops_edit.py)
+# --------------------------------------------------------------------------
+
+from . import ops_edit as _ops_edit  # noqa: E402
+
+_ops_edit.install(sys.modules[__name__])

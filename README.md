@@ -2,6 +2,9 @@
 
 # Krita MCP
 
+> Fork of [SanSaSane/krita-mcp](https://github.com/SanSaSane/krita-mcp) with
+> layer editing tools added. See [Editing layers](#editing-layers).
+
 An MCP server that lets Claude drive [Krita](https://krita.org): create
 documents, build layer stacks, paint shapes and text, run filters, export
 files — and *look at the canvas it just made*.
@@ -132,7 +135,14 @@ Restart the client. Krita must be running for the tools to do anything.
 | `get_pixel` | Exact colour at one pixel |
 | `draw` | Shapes, text, gradients, bitmaps onto a paint layer |
 | `apply_filter` | Any Krita filter, whole layer or a region |
-| `set_selection` | rect / all / none / invert / grow / shrink / feather |
+| `set_selection` | rect / ellipse / polygon / by colour (global or magic wand) / a layer's opaque area / all / none / invert / grow / shrink / feather |
+| `transform_layer` | Move, scale, rotate, flip one layer around a pivot |
+| `edit_selection` | Clear, fill, or copy/cut the selection onto a new layer |
+| `replace_color` | Recolour matching pixels, keeping soft edges |
+| `import_layer` | Add an image file as a new layer |
+| `snapshot` | List, take, restore the per-layer snapshots that make edits revertible |
+| `measure` | Opaque bounds and centre per layer; overlap against a reference layer |
+| `export_layers` | One trimmed PNG per layer plus a JSON manifest of positions |
 | `list_capabilities` | Filter names and parameters, blending mode ids |
 | `trigger_action` | Fire a Krita menu action by id (`edit_undo`, …) |
 | `run_python` | Arbitrary Python inside Krita, full libkis access |
@@ -149,6 +159,37 @@ accept `#rrggbb`, `#rrggbbaa`, SVG names, or `[r,g,b,a]`.
 Geometry uses `w`/`h`; outline thickness is `stroke_width`, kept separate so
 the two can't be confused. Only the union of affected pixels is read, painted
 and written back, so a small shape on a huge canvas stays cheap.
+
+### Editing layers
+
+This fork adds the tools needed to cut a drawing into pieces and fit them to a
+reference: select, lift onto a new layer, move, turn, scale, recolour, measure,
+export.
+
+```
+set_selection   mode=color layer=Sheet x=410 y=620 contiguous=true tolerance=6
+edit_selection  layer=Sheet action=cut_to_layer name=arm_front_upper
+transform_layer layer=arm_front_upper rotate=-8 scale=0.88 pivot=top translate=[12,-4]
+measure         layers=[arm_front_upper] reference=ref
+export_layers   directory=/abs/path/parts group=Fisherman
+```
+
+- `transform_layer` applies scale and flip, then rotation (both around
+  `pivot`), then `translate`. Positive angles are clockwise; +y is down. A
+  whole-pixel move and a plain flip are lossless. Scaling and rotating
+  resample (bilinear), so each one softens edges a little: combine changes in
+  one call, and to adjust an earlier transform restore its snapshot and apply
+  the corrected values instead of stacking a second transform on top.
+- **Edits are reverted with snapshots, not Ctrl+Z.** These tools write pixels
+  directly, which Krita's undo history does not record. Each one first stores
+  a compressed copy of the layer and returns its `snapshot` id;
+  `snapshot action=restore id=N` puts it back. The last 40 are kept, in
+  memory, until Krita quits.
+- Colour tools match per channel within `tolerance`. `replace_color` keeps
+  each pixel's opacity by default, so the anti-aliased rim of a flat shape is
+  recoloured with it.
+- Only RGBA/8-bit paint layers can be edited; groups and other layer types are
+  refused with a reason.
 
 ### Addressing layers
 
@@ -232,6 +273,7 @@ entry with no matching completion names the operation that killed it.
 ```bash
 python mcp_server.py --selftest    # quick health check inside Krita
 python test_mcp.py                 # full suite, 77 checks
+python test_edit.py                # editing tools, 44 checks
 python test_mcp.py -v              # ...printing every tool result
 python example_poster.py           # paint the example poster
 python example_banner.py           # paint this README's banner
@@ -254,6 +296,10 @@ python mcp_server.py --call draw --params-file commands.json
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File dev_reload.ps1
+```
+
+```bash
+./dev_reload.sh        # Linux / macOS
 ```
 
 Copies the plugin sources over and hot-reloads `krita_mcp.ops` inside the
@@ -279,6 +325,7 @@ pykrita/
     httpserver.py          loopback HTTP, auth, discovery file, tracing
     mainthread.py          worker thread -> GUI thread hand-off
     ops.py                 the operations
+    ops_edit.py            editing operations added by this fork
     imaging.py             QImage <-> Krita pixels, colour parsing
 ```
 
@@ -301,9 +348,16 @@ Environment variables, read by both halves:
 
 ## Platform support
 
-Developed and tested on **Windows 10 with Krita 5.3.3**. The code paths for
-Linux and macOS are implemented — resource folders, config locations, the
-installer — but have not been run there. Reports welcome.
+Upstream was developed and tested on **Windows 10 with Krita 5.3.3**. This fork
+is developed and tested on **macOS with Krita 5.3.4**; both suites pass there.
+The editing tools have not been run on Windows or Linux yet.
+
+On macOS, Krita aborted when the image changed size while canvas updates for
+the old size were still queued, and again when a document closed with layer
+docker updates pending. The bridge now lets Krita's event loop drain around
+those operations (`_settle_canvas` in `ops.py`). That removed both crashes in
+repeated runs of the suites, but it narrows a race inside Krita rather than
+proving it gone, so the advice below about closing documents still stands.
 
 ## License
 

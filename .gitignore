@@ -13,3 +13,5 @@ docs/banner_preview.png
 # Krita
 *.kra~
 *.kra-autosave.kra
+spikes/params.json
+krita_mcp_output.png

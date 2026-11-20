@@ -447,6 +447,32 @@ def _refresh(doc):
     doc.waitForDone()
 
 
+def _settle_canvas(doc, budget=0.25):
+    """Let the canvas catch up after the image changed size.
+
+    refreshProjection() + waitForDone() finish the image side, but each view
+    still has canvas updates queued behind a timer-driven signal compressor.
+    If the next request resizes the image again before those are delivered,
+    the OpenGL canvas receives update rectangles for an image size that no
+    longer exists and Krita aborts on an assertion in
+    KisOpenGLImageTextures::recalculateCache. Seen on macOS with Krita 5.3.4
+    whenever two size-changing operations arrived a few milliseconds apart.
+
+    Pumping the event loop here delivers those updates while the size is
+    stable. MainThreadInvoker defers any operation that arrives meanwhile.
+    """
+    from .compat import QCoreApplication, QEventLoop
+
+    _refresh(doc)
+    app = QCoreApplication.instance()
+    if app is None:
+        return
+    deadline = time.time() + budget
+    while time.time() < deadline:
+        app.processEvents(QEventLoop.ExcludeUserInputEvents, 20)
+        time.sleep(0.01)
+
+
 def _trace(text):
     """Write a step marker to the bridge trace log, if tracing is on."""
     try:
@@ -781,6 +807,11 @@ def op_close_document(params):
     # disabling autosave, clearing the modified flag, collecting stale
     # wrappers and pumping the event loop were all tried and none of them
     # removes it. Everything above narrows the window; see README.md.
+    # The layer docker batches node changes behind a timer too. If the image
+    # dies with entries still queued, KisNodeModel::processUpdateQueue reads a
+    # dead node on its next tick (seen on macOS, Krita 5.3.4). Drain it while
+    # the document is still alive.
+    _settle_canvas(doc, budget=0.35)
     _trace("close: calling Document.close()")
     doc.close()
     _trace("close: close call returned")
@@ -804,7 +835,7 @@ def op_resize_canvas(params):
         raise OpError("width and height must be at least 1")
     before = _doc_summary(doc)
     doc.resizeImage(x, y, width, height)
-    _refresh(doc)
+    _settle_canvas(doc)
     return {"before": before, "after": _doc_summary(doc)}
 
 
@@ -820,7 +851,7 @@ def op_scale_image(params):
     yres = _as_float(_arg(params, "y_res", doc.yRes()), "y_res")
     before = _doc_summary(doc)
     doc.scaleImage(width, height, int(xres), int(yres), strategy)
-    _refresh(doc)
+    _settle_canvas(doc)
     return {"before": before, "after": _doc_summary(doc),
             "strategy": strategy}
 
@@ -832,7 +863,7 @@ def op_rotate_image(params):
     degrees = _as_float(_req(params, "degrees"), "degrees")
     before = _doc_summary(doc)
     doc.rotateImage(math.radians(degrees))
-    _refresh(doc)
+    _settle_canvas(doc)
     return {"before": before, "after": _doc_summary(doc), "degrees": degrees}
 
 
@@ -847,7 +878,7 @@ def op_crop_image(params):
         raise OpError("width and height must be at least 1")
     before = _doc_summary(doc)
     doc.crop(x, y, width, height)
-    _refresh(doc)
+    _settle_canvas(doc)
     return {"before": before, "after": _doc_summary(doc)}
 
 
@@ -855,7 +886,7 @@ def op_crop_image(params):
 def op_flatten_image(params):
     doc = resolve_document(params.get("document"))
     doc.flatten()
-    _refresh(doc)
+    _settle_canvas(doc)
     return {"flattened": True, "layers": layer_tree(doc, 1)}
 
 
